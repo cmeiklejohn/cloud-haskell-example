@@ -16,4 +16,6 @@ executable cloud-haskell-example
   hs-source-dirs:      src
   main-is:             Main.hs
   default-language:    Haskell2010
-  build-depends:       base >= 4.7 && < 5
+  build-depends:       base >= 4.7 && < 5,
+                       binary,
+                       distributed-process
