@@ -12,8 +12,14 @@ import Control.Monad.RWS.Strict (
   RWS, MonadReader, MonadWriter, MonadState,
   ask, tell, get, execRWS, liftIO)
 
-import Control.Distributed.Process (ProcessId)
+import Control.Distributed.Process.Node (initRemoteTable, runProcess, newLocalNode)
+import Control.Distributed.Process (Process, ProcessId,
+  send, say, expect, getSelfPid, spawnLocal, match, receiveWait)
 
+import Network.Transport.TCP (createTransport, defaultTCPParameters)
+
+import Control.Monad (replicateM, forever)
+import Control.Concurrent (threadDelay)
 import Control.Lens (makeLenses, (+=), (%%=))
 import System.Random (StdGen, Random, randomR, newStdGen)
 
@@ -60,20 +66,21 @@ newtype ServerAction a = ServerAction {
             MonadWriter [Message],
             MonadReader ServerConfig)
 
--- Server logic.
+-- -- Server logic.
 
 tickHandler :: Tick -> ServerAction ()
 tickHandler Tick = do
-  ServerConfig myPidPeers peers <- ask
+  ServerConfig myPid peers <- ask
   random <- randomWithin (0, length peers - 1)
   let peer = peers !! random
   sendBingBongTo peer Bing
 
 msgHandler :: Message -> ServerAction ()
-msghandler (Message sender recipient Bing) = do
+msgHandler (Message sender recipient Bing) = do
   bingCount += 1
   sendBingBongTo sender Bong
-msgHandler (Message sender recipient Bong) = bongCount += 1
+msgHandler (Message sender recipient Bong) = do
+  bongCount += 1
 
 sendBingBongTo :: ProcessId -> BingBong -> ServerAction ()
 sendBingBongTo recipient bingbong = do
@@ -83,5 +90,35 @@ sendBingBongTo recipient bingbong = do
 randomWithin :: Random r => (r,r) -> ServerAction r
 randomWithin bounds = randomGen %%= randomR bounds
 
-main :: IO ()
-main = putStrLn "Hello World!"
+runServer :: ServerConfig -> ServerState -> Process ()
+runServer config state = do
+  let run handler msg = return $ execRWS (runAction $ handler msg) config state
+  (state', outputMessages) <- receiveWait [
+    match $ run msgHandler,
+    match $ run tickHandler]
+  say $ "Current state: " ++ show state'
+  mapM (\msg -> send (recipientOf msg) msg) outputMessages
+  runServer config state'
+
+spawnServer :: Process ProcessId
+spawnServer = spawnLocal $ do
+  myPid <- getSelfPid
+  otherPids <- expect
+  spawnLocal $ forever $ do
+    liftIO $ threadDelay (10^6)
+    send myPid Tick
+  randomGen <- liftIO newStdGen
+  runServer (ServerConfig myPid otherPids) (ServerState 0 0 randomGen)
+
+spawnServers :: Int -> Process ()
+spawnServers count = do
+  pids <- replicateM count spawnServer
+  mapM_ (`send` pids) pids
+
+main :: IO String
+main = do
+  Right transport <- createTransport "localhost" "0" defaultTCPParameters
+  backendNode <- newLocalNode transport initRemoteTable
+  runProcess backendNode (spawnServers 2)
+  putStrLn "Push enter to exit"
+  getLine

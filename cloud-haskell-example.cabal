@@ -21,4 +21,5 @@ executable cloud-haskell-example
                        distributed-process,
                        lens,
                        mtl,
+                       network-transport-tcp,
                        random
